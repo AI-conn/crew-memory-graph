@@ -219,15 +219,15 @@ connection is one config surface.
 
 - ✅ Complete and tested locally: ingestion, memory layers, handoffs, cross-process demo,
   Q&A with evidence paths, web UI, benchmark.
-- ⚠️ **Not yet executed against a live FalkorDB server from the build VM** (no Docker /
-  no server there). A FalkorDB Cloud account and free-tier instance have been created
-  for the hosted demo; the live integration suite runs against that instance at
-  deployment. Until then the FalkorDB backend's Cypher is verified by unit tests
-  (generated statements + parameter discipline + a recording fake client), and
-  `scripts/run_falkordb_local.sh` performs the live verification end-to-end on any
-  machine with Docker.
-- Remaining to submission: hosted deployment on the Cloud instance + the live
-  integration pass, the demo video, then the entry form.
+- ✅ **Live:** the app is deployed and live at
+  [https://crew-memory-graph.onrender.com](https://crew-memory-graph.onrender.com), backed by
+  FalkorDB Cloud.
+- ✅ **FalkorDB backend is live:** graph `crewmem_meridian` on FalkorDB Cloud is
+  seeded on boot with 186 nodes / 564 edges, and seed-on-boot is idempotent.
+- ✅ **Verified live:** `/api/status` on the live site confirms backend "falkordb".
+  That confirms the hosted app is running against FalkorDB, not the dev backend.
+- Remaining to submission: the demo video, then the entry form — hosted
+  deployment on FalkorDB Cloud is complete, as the bullets above confirm.
 
 ## AI assistance disclosure
 
