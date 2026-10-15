@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crew Memory Graph — one graph brain for a multi-agent crew</title>
+<style>
+  :root{
+    --bg:#070a12; --panel:#0d1220; --panel2:#111830; --line:#1f2a4a;
+    --ink:#e8edf9; --dim:#8fa0c2; --accent:#6ee7ff; --accent2:#b78bff;
+    --warn:#ffb454; --ok:#52e0a4;
+    --person:#6ee7ff; --project:#b78bff; --decision:#ffb454; --document:#52e0a4;
+    --team:#ff7ab6; --topic:#ffd166; --fact:#7dd3fc; --ticket:#94a3b8;
+    --chatthread:#a3e635; --agent:#f472b6; --episode:#64748b; --handoff:#fb7185;
+    --procedure:#34d399; --session:#475569; --company:#e2e8f0; --step:#34d399;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#16224a 0%,var(--bg) 55%);
+       color:var(--ink);font:15px/1.55 "Avenir Next","Segoe UI",system-ui,sans-serif}
+  header{padding:26px 30px 8px;display:flex;flex-wrap:wrap;gap:14px;align-items:baseline}
+  h1{font-size:30px;margin:0;letter-spacing:.3px}
+  h1 .thin{color:var(--dim);font-weight:400}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto;align-items:center}
+  .chip{border:1px solid var(--line);background:var(--panel);border-radius:999px;
+        padding:4px 12px;font-size:12.5px;color:var(--dim)}
+  .chip b{color:var(--ink)}
+  .chip.warn{color:#1a1206;background:var(--warn);border-color:var(--warn);font-weight:700}
+  .chip.ok{color:#052e1d;background:var(--ok);border-color:var(--ok);font-weight:700}
+  #offlineBanner{display:none;margin:10px 30px 0;padding:10px 14px;border-radius:10px;
+        background:#3a2708;border:1px solid var(--warn);color:#ffd9a0;font-size:13.5px}
+  main{display:grid;grid-template-columns:400px 1fr;gap:18px;padding:18px 30px 30px}
+  @media (max-width:980px){main{grid-template-columns:1fr}}
+  .card{background:linear-gradient(180deg,var(--panel2),var(--panel));
+        border:1px solid var(--line);border-radius:16px;padding:18px;margin-bottom:18px}
+  .card h2{font-size:14px;text-transform:uppercase;letter-spacing:1.6px;color:var(--dim);margin:0 0 12px}
+  input[type=text],textarea,select{width:100%;background:#0a0f1e;border:1px solid var(--line);
+        border-radius:10px;color:var(--ink);padding:10px 12px;font:inherit}
+  textarea{min-height:74px;resize:vertical}
+  button{background:linear-gradient(90deg,#2563eb,#7c3aed);color:#fff;border:0;border-radius:10px;
+        padding:10px 16px;font:inherit;font-weight:600;cursor:pointer}
+  button.secondary{background:#1c2745;border:1px solid var(--line);color:var(--ink)}
+  button:disabled{opacity:.55;cursor:wait}
+  .row{display:flex;gap:8px}.row>*{flex:1}
+  .examples{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+  .ex{font-size:12.5px;border:1px solid var(--line);border-radius:999px;padding:4px 10px;
+      color:var(--dim);cursor:pointer;background:#0a0f1e}
+  .ex:hover{color:var(--ink);border-color:var(--accent)}
+  #answerText{font-size:17px}
+  .path{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:10px 0}
+  .pnode{border-radius:8px;padding:3px 9px;font-size:12.5px;background:#0a0f1e;border:1px solid var(--line)}
+  .prel{color:var(--accent);font-size:11.5px;letter-spacing:.4px}
+  .muted{color:var(--dim);font-size:13px}
+  .log{background:#0a0f1e;border:1px solid var(--line);border-radius:10px;padding:10px 12px;
+       font-size:13px;white-space:pre-wrap;max-height:220px;overflow:auto}
+  .tabs{display:flex;gap:6px;margin-bottom:10px}
+  .tab{padding:5px 12px;border-radius:999px;border:1px solid var(--line);cursor:pointer;color:var(--dim);font-size:13px}
+  .tab.active{color:#06121f;background:var(--accent);border-color:var(--accent);font-weight:700}
+  .memitem{padding:7px 0;border-bottom:1px dashed #1c2745;font-size:13.5px}
+  .memitem .tag{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:1px}
+  svg{width:100%;height:560px;display:block}
+  .legend{display:flex;flex-wrap:wrap;gap:10px;font-size:12px;color:var(--dim);margin-top:8px}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+  .handoff{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:#0a0f1e}
+  .handoff .st{float:right;font-size:11.5px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+  .st.open{color:var(--warn)}.st.done{color:var(--ok)}
+  a.chip{text-decoration:none;cursor:pointer}
+  a.chip:hover{color:var(--ink);border-color:var(--accent)}
+  .pricingWrap{padding:2px 30px 36px}
+  .pricingHead{display:flex;flex-wrap:wrap;gap:10px;align-items:baseline;margin-bottom:14px}
+  .pricingHead h2{font-size:20px;margin:0}
+  .pricingGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+  @media (max-width:980px){.pricingGrid{grid-template-columns:1fr}}
+  .tier .price{font-size:28px;font-weight:700;margin:2px 0 4px}
+  .tier .price span{font-size:13.5px;color:var(--dim);font-weight:400}
+  .tier ul{margin:10px 0 0;padding-left:18px;color:var(--dim);font-size:13.5px}
+  .tier ul li{margin-bottom:5px}
+  .tier ul li b{color:var(--ink);font-weight:600}
+  .tier.featured{border-color:var(--accent)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Crew Memory Graph <span class="thin">— one FalkorDB brain, three agents, zero prompt-passed context</span></h1>
+  <div class="chips">
+    <span class="chip" id="backendChip">backend: …</span>
+    <span class="chip" id="countChip">graph: …</span>
+    <span class="chip warn">SYNTHETIC DEMO COMPANY</span>
+    <a class="chip" href="#pricing">Pricing</a>
+    <span class="chip">tenant <input id="tenant" type="text" value="meridian"
+        style="width:90px;display:inline-block;padding:2px 8px;margin-left:4px"></span>
+  </div>
+</header>
+<div id="offlineBanner">⚠ Offline dev mode: this instance is running on the in-memory dev
+  backend (snapshot-persisted), <b>not</b> FalkorDB. Set <code>APP_GRAPH_BACKEND=falkordb</code>
+  with <code>FALKORDB_*</code> env vars to run on FalkorDB — the crew code is identical.</div>
+
+<main>
+  <section>
+    <div class="card">
+      <h2>Ask the Company Brain</h2>
+      <div class="row">
+        <input type="text" id="question" placeholder="Who owns the Atlas Billing Platform?">
+        <button id="askBtn" style="flex:0 0 90px">Ask</button>
+      </div>
+      <div class="examples" id="examples"></div>
+    </div>
+
+    <div class="card">
+      <h2>The Handoff Demo</h2>
+      <p class="muted"><b>Session 1:</b> the Researcher is taught a launch briefing and the
+        Planner turns it into a plan + handoff — all written to the graph.<br>
+        <b>Session 2:</b> a fresh Executor reads the handoff <i>from the graph</i> and acts on
+        memory it never saw written.</p>
+      <div class="row">
+        <button id="s1Btn">▶ Session 1 — teach &amp; hand off</button>
+        <button id="s2Btn" class="secondary">▶ Session 2 — Executor acts</button>
+      </div>
+      <div class="log" id="demoLog" style="margin-top:12px">No sessions run yet in this view.</div>
+    </div>
+
+    <div class="card">
+      <h2>Teach the crew something new</h2>
+      <textarea id="teachText">The Beacon beta opens to the Harbor waitlist first; general availability follows two weeks later.</textarea>
+      <div class="row" style="margin-top:8px">
+        <select id="teachAbout">
+          <option value="project:beacon-mobile-app">about: Beacon Mobile App</option>
+          <option value="project:atlas-billing-platform">about: Atlas Billing Platform</option>
+          <option value="project:vertex-api-gateway">about: Vertex API Gateway</option>
+        </select>
+        <button id="teachBtn" style="flex:0 0 110px">Teach</button>
+      </div>
+      <p class="muted">Written to the semantic memory layer with provenance — then ask
+        “What did the crew learn about the Beacon Mobile App?”</p>
+    </div>
+
+    <div class="card">
+      <h2>Handoffs</h2>
+      <div id="handoffs"><span class="muted">None yet.</span></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>Answer — with its evidence path</h2>
+      <div id="answerText">Ask a question, or run Session 2 and watch the Executor answer
+        from memory. Every answer shows the exact graph path it came from.</div>
+      <div id="evidence"></div>
+    </div>
+
+    <div class="card">
+      <h2>The Graph</h2>
+      <svg id="viz"></svg>
+      <div class="legend" id="legend"></div>
+      <p class="muted">Drag nodes to explore. Answer evidence lights up; everything else dims.
+        This is the live graph — the same one the agents read and write.</p>
+    </div>
+
+    <div class="card">
+      <h2>Memory layers</h2>
+      <div class="tabs">
+        <span class="tab active" data-layer="episodic">Episodic — what happened</span>
+        <span class="tab" data-layer="semantic">Semantic — what is true</span>
+        <span class="tab" data-layer="procedural">Procedural — how we do things</span>
+      </div>
+      <div id="memoryList"><span class="muted">Loading…</span></div>
+    </div>
+  </section>
+</main>
+
+<section class="pricingWrap" id="pricing">
+  <div class="pricingHead">
+    <h2>Pricing <span class="thin" style="color:var(--dim);font-weight:400">— hosted Crew Memory Graph, sold as a monthly service</span></h2>
+    <span class="chip warn">LAUNCH PRICING — PROPOSED</span>
+  </div>
+  <div class="pricingGrid">
+    <div class="card tier">
+      <h2>Crew — Free</h2>
+      <div class="price">$0 <span>/ forever</span></div>
+      <p class="muted">One crew, one graph brain. The full demo experience above, for a single team.</p>
+      <ul>
+        <li><b>1 tenant workspace</b> — its own isolated graph</li>
+        <li>Up to <b>3 crew agents</b></li>
+        <li>Three-layer memory + handoffs, <b>1,000 nodes</b></li>
+        <li>Evidence-path answers in the web UI</li>
+        <li>Community support</li>
+      </ul>
+    </div>
+    <div class="card tier featured">
+      <h2>Studio</h2>
+      <div class="price">$49 <span>/ month — proposed</span></div>
+      <p class="muted">For teams whose crews work across several projects at once.</p>
+      <ul>
+        <li><b>5 tenant workspaces</b>, unlimited agents per crew</li>
+        <li><b>25,000 nodes</b> per graph</li>
+        <li>Evidence-path <b>API access</b> (ask / teach / handoff)</li>
+        <li><b>12-month</b> memory retention + procedural replay</li>
+        <li>Email support, next business day</li>
+      </ul>
+    </div>
+    <div class="card tier">
+      <h2>Agency</h2>
+      <div class="price">$199 <span>/ month — proposed</span></div>
+      <p class="muted">One memory graph per client, with the audit trail to prove what the crew knows.</p>
+      <ul>
+        <li><b>Unlimited workspaces</b>, <b>250,000 nodes</b> per graph</li>
+        <li>Memory-write <b>provenance export + audit log</b></li>
+        <li>Custom retention</li>
+        <li>Priority support (same business day) + onboarding</li>
+        <li>Uptime SLA</li>
+      </ul>
+    </div>
+  </div>
+  <p class="muted" style="margin-top:12px">Packaging preview only: these are <b>proposed</b> launch tiers,
+    pending final ratification. The demo on this page is free, nothing is for sale here yet, and there is no checkout.</p>
+</section>
+
+<script>
+const $ = s => document.querySelector(s);
+const tenant = () => $("#tenant").value.trim().toLowerCase() || "meridian";
+const COLORS = {Person:"#6ee7ff",Project:"#b78bff",Decision:"#ffb454",Document:"#52e0a4",
+  Team:"#ff7ab6",Topic:"#ffd166",Fact:"#7dd3fc",Ticket:"#94a3b8",ChatThread:"#a3e635",
+  Agent:"#f472b6",Episode:"#64748b",Handoff:"#fb7185",Procedure:"#34d399",
+  Session:"#475569",Company:"#e2e8f0",Step:"#34d399"};
+let graph = {nodes:[], edges:[]}, highlight = new Set(), highlightEdges = new Set();
+
+async function jget(url){ const r = await fetch(url); return r.json(); }
+async function jpost(url, body){ const r = await fetch(url, {method:"POST",
+  headers:{"Content-Type":"application/json"}, body: JSON.stringify(body||{})}); return r.json(); }
+
+async function refreshStatus(){
+  const s = await jget("/api/status?tenant=" + tenant());
+  $("#backendChip").innerHTML = s.backend === "falkordb"
+    ? "<b>FalkorDB</b> connected" : "<b>dev backend</b> (offline)";
+  $("#backendChip").className = "chip " + (s.backend === "falkordb" ? "ok" : "warn");
+  $("#countChip").innerHTML = "graph: <b>" + s.nodes + "</b> nodes · <b>" + s.edges + "</b> edges";
+  $("#offlineBanner").style.display = s.backend === "falkordb" ? "none" : "block";
+}
+async function refreshGraph(){ graph = await jget("/api/graph?tenant=" + tenant()); startSim(); }
+async function refreshHandoffs(){
+  const hs = await jget("/api/handoffs?tenant=" + tenant());
+  $("#handoffs").innerHTML = hs.length ? hs.map(h =>
+    `<div class="handoff"><span class="st ${h.status}">${h.status}</span>
+     <b>${h.from} → ${h.to}</b><br>${h.summary || ""}
+     ${h.question ? `<br><span class="muted">Q: ${h.question}</span>` : ""}
+     ${h.result ? `<br><span class="muted">Result: ${h.result}</span>` : ""}</div>`).join("")
+    : '<span class="muted">None yet.</span>';
+}
+async function refreshMemory(layer){
+  const items = await jget("/api/memory?tenant=" + tenant() + "&layer=" + layer);
+  $("#memoryList").innerHTML = items.length ? items.slice(-40).reverse().map(m =>
+    `<div class="memitem"><span class="tag">${m.label}${m.agent ? " · " + m.agent : ""}</span><br>${m.name}</div>`).join("")
+    : '<span class="muted">Nothing in this layer yet.</span>';
+}
+
+/* ---------- Q&A ---------- */
+const EXAMPLES = [
+  "Who owns the Atlas Billing Platform?",
+  "Why did we decide to adopt usage-based pricing for Atlas?",
+  "Who decided to sunset the legacy billing API?",
+  "Who knows about data pipelines?",
+  "Who works on Orion Search?",
+  "What decisions were made about the Vertex API Gateway?",
+  "What does the Beacon Mobile App depend on?",
+  "What did the crew learn about the Beacon Mobile App?",
+];
+$("#examples").innerHTML = EXAMPLES.map(q => `<span class="ex">${q}</span>`).join("");
+document.querySelectorAll(".ex").forEach(el => el.onclick = () => { $("#question").value = el.textContent; ask(); });
+
+function renderAnswer(res){
+  $("#answerText").textContent = res.answer;
+  $("#evidence").innerHTML = (res.evidence || []).map(p =>
+    `<div class="path">` + p.nodes.map((n, i) =>
+      `${i ? `<span class="prel">—${p.rels[i-1]}→</span>` : ""}<span class="pnode" style="border-color:${COLORS[n.label]||"#888"}">${n.name}</span>`
+    ).join("") + `</div>`).join("");
+  highlight = new Set((res.subgraph?.nodes || []).map(n => n.uid));
+  highlightEdges = new Set((res.subgraph?.edges || []).map(e => e.src + "|" + e.rel + "|" + e.dst));
+}
+async function ask(){
+  const q = $("#question").value.trim(); if (!q) return;
+  $("#askBtn").disabled = true;
+  const res = await jpost("/api/ask", {tenant: tenant(), question: q});
+  renderAnswer(res); $("#askBtn").disabled = false;
+}
+$("#askBtn").onclick = ask;
+$("#question").addEventListener("keydown", e => { if (e.key === "Enter") ask(); });
+
+/* ---------- Demo ---------- */
+function logDemo(t){ $("#demoLog").textContent = t; }
+$("#s1Btn").onclick = async () => {
+  $("#s1Btn").disabled = true;
+  const r = await jpost("/api/session1?tenant=" + tenant());
+  logDemo(`SESSION 1 (researcher ${r.researcher_session.slice(-6)}, planner ${r.planner_session.slice(-6)})\n` +
+    `• Researcher recorded ${r.facts.length} briefing facts to the semantic layer\n` +
+    `• Planner recorded a procedure (plan) in the procedural layer\n` +
+    `• Planner filed handoff ${r.handoff.slice(-6)} → Executor, referencing the facts + plan\n` +
+    `Everything above lives in the graph now — Session 2 starts cold.`);
+  await Promise.all([refreshHandoffs(), refreshMemory(currentLayer), refreshStatus(), refreshGraph()]);
+  $("#s1Btn").disabled = false;
+};
+$("#s2Btn").onclick = async () => {
+  $("#s2Btn").disabled = true;
+  const r = await jpost("/api/session2?tenant=" + tenant());
+  if (!r.reports.length) { logDemo("No open handoffs for the Executor. Run Session 1 first."); }
+  else {
+    const rep = r.reports[0];
+    logDemo(`SESSION 2 (executor ${r.executor_session.slice(-6)} — fresh agent, empty context)\n` +
+      `• Read handoff from the graph and followed its REFERENCES edges\n` +
+      `• Memory path traversed: ${rep.memory_path.join("  →  ")}\n` +
+      `• Answered from memory: ${rep.answer}\n` +
+      `• Step performed: ${rep.step_done || "—"}\n• Handoff closed with the result recorded as an episode.`);
+    if (rep.evidence?.length) renderAnswer({answer: rep.answer, evidence: rep.evidence,
+      subgraph: {nodes: rep.memory_path.map(u => ({uid: u})), edges: []}});
+  }
+  await Promise.all([refreshHandoffs(), refreshMemory(currentLayer), refreshStatus(), refreshGraph()]);
+  $("#s2Btn").disabled = false;
+};
+$("#teachBtn").onclick = async () => {
+  const r = await jpost("/api/teach", {tenant: tenant(), text: $("#teachText").value,
+    about: $("#teachAbout").value});
+  if (r.ok) { await refreshMemory(currentLayer); await refreshStatus(); }
+};
+
+/* ---------- Memory tabs ---------- */
+let currentLayer = "episodic";
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
+  document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+  t.classList.add("active"); currentLayer = t.dataset.layer; refreshMemory(currentLayer);
+});
+
+/* ---------- Graph viz (force-directed SVG) ---------- */
+const svg = $("#viz"); let sim = null;
+$("#legend").innerHTML = Object.entries(COLORS).slice(0, 10).map(([k, v]) =>
+  `<span><span class="dot" style="background:${v}"></span>${k}</span>`).join("");
+function startSim(){
+  const W = svg.clientWidth || 900, H = 560;
+  const nodes = graph.nodes.map(n => ({...n, x: Math.random()*W, y: Math.random()*H, vx: 0, vy: 0}));
+  const byUid = Object.fromEntries(nodes.map(n => [n.uid, n]));
+  const edges = graph.edges.filter(e => byUid[e.src] && byUid[e.dst]);
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.innerHTML = edges.map(e => `<line data-k="${e.src}|${e.rel}|${e.dst}" stroke="#26335c" stroke-width="1"/>`).join("")
+    + nodes.map(n => `<g data-uid="${n.uid}"><circle r="${n.label === "Company" ? 10 : 6}"
+        fill="${COLORS[n.label] || "#888"}"/><title>${n.label}: ${n.name}</title>
+        <text fill="#aebadd" font-size="9.5" dy="-10" text-anchor="middle" style="display:none">${n.name}</text></g>`).join("");
+  const lines = [...svg.querySelectorAll("line")], groups = [...svg.querySelectorAll("g")];
+  const gByUid = Object.fromEntries(groups.map(g => [g.dataset.uid, g]));
+  let drag = null;
+  groups.forEach(g => {
+    g.addEventListener("pointerdown", e => { drag = byUid[g.dataset.uid]; });
+    g.querySelector("circle").addEventListener("mouseenter", () => g.querySelector("text").style.display = "block");
+    g.querySelector("circle").addEventListener("mouseleave", () => g.querySelector("text").style.display = "none");
+  });
+  svg.addEventListener("pointermove", e => {
+    if (!drag) return; const r = svg.getBoundingClientRect();
+    drag.x = (e.clientX - r.left) * W / r.width; drag.y = (e.clientY - r.top) * H / r.height; drag.vx = drag.vy = 0;
+  });
+  svg.addEventListener("pointerup", () => drag = null);
+  if (sim) cancelAnimationFrame(sim);
+  let frames = 0;
+  const step = () => {
+    for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
+      const a = nodes[i], b = nodes[j]; let dx = a.x - b.x, dy = a.y - b.y;
+      let d2 = dx*dx + dy*dy + 0.01, f = 900 / d2, d = Math.sqrt(d2);
+      a.vx += dx/d*f; a.vy += dy/d*f; b.vx -= dx/d*f; b.vy -= dy/d*f;
+    }
+    for (const e of edges) {
+      const a = byUid[e.src], b = byUid[e.dst];
+      let dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) + 0.01, f = (d - 70) * 0.012;
+      a.vx += dx/d*f*d*0.05; a.vy += dy/d*f*d*0.05; b.vx -= dx/d*f*d*0.05; b.vy -= dy/d*f*d*0.05;
+    }
+    for (const n of nodes) {
+      n.vx += (W/2 - n.x) * 0.002; n.vy += (H/2 - n.y) * 0.002;
+      if (n !== drag) { n.x += n.vx; n.y += n.vy; }
+      n.vx *= 0.82; n.vy *= 0.82;
+      const g = gByUid[n.uid]; if (g) g.setAttribute("transform", `translate(${n.x},${n.y})`);
+      const dim = highlight.size && !highlight.has(n.uid);
+      if (g) g.style.opacity = dim ? 0.15 : 1;
+    }
+    lines.forEach((ln, i) => {
+      const e = edges[i], a = byUid[e.src], b = byUid[e.dst];
+      ln.setAttribute("x1", a.x); ln.setAttribute("y1", a.y);
+      ln.setAttribute("x2", b.x); ln.setAttribute("y2", b.y);
+      const hot = highlightEdges.has(ln.dataset.k);
+      ln.setAttribute("stroke", hot ? "#6ee7ff" : "#26335c");
+      ln.style.opacity = highlight.size && !hot ? 0.12 : 0.75;
+    });
+    if (++frames < 500) sim = requestAnimationFrame(step);
+  };
+  step();
+}
+
+/* ---------- boot ---------- */
+$("#tenant").addEventListener("change", async () => {
+  highlight = new Set(); await Promise.all([refreshStatus(), refreshGraph(), refreshHandoffs(), refreshMemory(currentLayer)]);
+});
+(async () => { await Promise.all([refreshStatus(), refreshGraph(), refreshHandoffs(), refreshMemory(currentLayer)]); })();
+</script>
+</body>
+</html>
