@@ -216,7 +216,7 @@
 
 <script>
 const $ = s => document.querySelector(s);
-const tenant = () => $("#tenant").value.trim().toLowerCase() || "meridian";
+const tenant = () => $("#tenant").value.trim().toLowerCase() || "meridian"; const esc = s => String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
 const COLORS = {Person:"#6ee7ff",Project:"#b78bff",Decision:"#ffb454",Document:"#52e0a4",
   Team:"#ff7ab6",Topic:"#ffd166",Fact:"#7dd3fc",Ticket:"#94a3b8",ChatThread:"#a3e635",
   Agent:"#f472b6",Episode:"#64748b",Handoff:"#fb7185",Procedure:"#34d399",
@@ -239,16 +239,16 @@ async function refreshGraph(){ graph = await jget("/api/graph?tenant=" + tenant(
 async function refreshHandoffs(){
   const hs = await jget("/api/handoffs?tenant=" + tenant());
   $("#handoffs").innerHTML = hs.length ? hs.map(h =>
-    `<div class="handoff"><span class="st ${h.status}">${h.status}</span>
-     <b>${h.from} → ${h.to}</b><br>${h.summary || ""}
-     ${h.question ? `<br><span class="muted">Q: ${h.question}</span>` : ""}
-     ${h.result ? `<br><span class="muted">Result: ${h.result}</span>` : ""}</div>`).join("")
+    `<div class="handoff"><span class="st ${esc(h.status)}">${esc(h.status)}</span>
+     <b>${esc(h.from)} → ${esc(h.to)}</b><br>${esc(h.summary || "")}
+     ${h.question ? `<br><span class="muted">Q: ${esc(h.question)}</span>` : ""}
+     ${h.result ? `<br><span class="muted">Result: ${esc(h.result)}</span>` : ""}</div>`).join("")
     : '<span class="muted">None yet.</span>';
 }
 async function refreshMemory(layer){
   const items = await jget("/api/memory?tenant=" + tenant() + "&layer=" + layer);
   $("#memoryList").innerHTML = items.length ? items.slice(-40).reverse().map(m =>
-    `<div class="memitem"><span class="tag">${m.label}${m.agent ? " · " + m.agent : ""}</span><br>${m.name}</div>`).join("")
+    `<div class="memitem"><span class="tag">${esc(m.label)}${m.agent ? " · " + esc(m.agent) : ""}</span><br>${esc(m.name)}</div>`).join("")
     : '<span class="muted">Nothing in this layer yet.</span>';
 }
 
@@ -270,7 +270,7 @@ function renderAnswer(res){
   $("#answerText").textContent = res.answer;
   $("#evidence").innerHTML = (res.evidence || []).map(p =>
     `<div class="path">` + p.nodes.map((n, i) =>
-      `${i ? `<span class="prel">—${p.rels[i-1]}→</span>` : ""}<span class="pnode" style="border-color:${COLORS[n.label]||"#888"}">${n.name}</span>`
+      `${i ? `<span class="prel">—${esc(p.rels[i-1])}→</span>` : ""}<span class="pnode" style="border-color:${esc(COLORS[n.label]||"#888")}">${esc(n.name)}</span>`
     ).join("") + `</div>`).join("");
   highlight = new Set((res.subgraph?.nodes || []).map(n => n.uid));
   highlightEdges = new Set((res.subgraph?.edges || []).map(e => e.src + "|" + e.rel + "|" + e.dst));
