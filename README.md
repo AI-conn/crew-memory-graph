@@ -16,11 +16,7 @@ Built for **Graph Hacks: Context for AI Agents** (WeMakeDevs × FalkorDB), enter
 
 ## Live demo
 
-**Live demo:** _deployment URL is added here when the hosted demo goes live — it
-deploys against the project's FalkorDB Cloud free-tier instance during the
-submission window._ Until the URL lands, the Quickstart below runs the complete
-demo locally (same code, same seed data, same two-session handoff), and
-`scripts/run_falkordb_local.sh` runs it end-to-end against a real FalkorDB.
+**Live demo:** https://crew-memory-graph.onrender.com — deploys against the project's FalkorDB Cloud free-tier instance.
 
 ## Why the graph is the product (the removal test)
 
