@@ -11,7 +11,7 @@ import os
 
 from flask import Flask, jsonify, render_template, request
 
-from . import agents, ingest, qa
+from . import agents, inference, ingest, qa
 from .config import Config
 from .graphdb import backend_for_tenant, snapshot_path
 from .memory import MemoryService
@@ -96,6 +96,27 @@ def create_app(cfg: Config | None = None) -> Flask:
         res = qa.answer_question(be, data.get("question", ""),
                                  memory=MemoryService(be))
         return jsonify(res)
+
+    @app.post("/api/ask_llm")
+    def ask_llm():
+        """Memory-recall answer synthesized by Token Factory inference
+        (per-role routing in crew_memory/inference.py): the graph supplies
+        the facts, the routed model supplies the reasoning."""
+        data = request.get_json(force=True)
+        tenant = data.get("tenant") or cfg.default_tenant
+        be = ensure_seeded(tenant)
+        client = inference.InferenceClient()
+        if not client.configured:
+            return jsonify({"ok": False, "error":
+                            f"{inference.API_KEY_ENV} is not set — "
+                            "Token Factory inference is not configured"}), 503
+        try:
+            res = inference.answer_from_memory(
+                be, data.get("question", ""), client=client,
+                memory=MemoryService(be))
+        except inference.InferenceError as e:
+            return jsonify({"ok": False, "error": str(e)}), 502
+        return jsonify({"ok": True, **res})
 
     @app.post("/api/teach")
     def teach():
