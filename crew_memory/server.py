@@ -62,8 +62,7 @@ def create_app(cfg: Config | None = None) -> Flask:
             "tenant": tenant,
             "backend": be.name,
             "backend_detail": (
-                f"FalkorDB graph '{cfg.graph_name(tenant)}' at "
-                f"{cfg.falkor_host}:{cfg.falkor_port}"
+                "FalkorDB Cloud (managed)"
                 if be.name == "falkordb" else
                 "OFFLINE DEV MODE — in-memory graph (not FalkorDB)"),
             "nodes": be.node_count(), "edges": be.edge_count(),
