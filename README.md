@@ -126,6 +126,39 @@ same assertions when a server is present. It is never disguised: if you run the 
 FalkorDB configured, the UI shows an **"Offline dev mode — in-memory graph (not FalkorDB)"**
 banner.
 
+## Nebius Token Factory + Nemotron
+
+The graph engine above is deterministic and needs no LLM. Separately, the
+app has an optional inference layer (`crew_memory/inference.py`) that answers
+memory-recall questions over the graph's stored facts through the **Nebius
+Token Factory** API (OpenAI-compatible), with per-role model routing:
+
+| Crew role | Model | Used for |
+|---|---|---|
+| Planner (heavy reasoning) | `nvidia/Nemotron-3-Ultra-550b-a55b` | NVIDIA Nemotron Ultra-class reasoning: recall synthesis, plans |
+| Researcher / Executor (everyday calls) | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` | NVIDIA Nemotron Nano: fast, inexpensive everyday calls |
+
+The routing table lives in one place (`ROLE_MODELS` in
+`crew_memory/inference.py`). The demo path is `answer_from_memory()`: it
+gathers the graph's stored facts, asks the Planner model to synthesize an
+answer from those facts only, and falls back once to the everyday model if
+the Planner call fails. It is exposed as `POST /api/ask_llm`
+(`{"question": "..."}`) alongside the deterministic `/api/ask`.
+
+Setup: the API key comes from the environment — nothing is hardcoded.
+
+```bash
+export NEBIUS_TOKEN_FACTORY_API_KEY=<your Token Factory key>
+.venv/bin/python run.py
+```
+
+Without the variable the app runs normally and `/api/ask_llm` returns 503.
+Both model IDs were verified against the live Token Factory account
+(`GET /v1/models`) and smoked end-to-end (HTTP 200, correct grounded recall)
+— Ultra on 2026-10-15, Nano on 2026-10-16 (the everyday role was re-seated
+to Nano then); the unit tests cover routing and fallback with a mocked
+transport, so the test suite itself makes no live calls.
+
 ## Cypher queries & graph algorithms
 
 All Cypher lives in one module (`crew_memory/graphdb.py`) behind the backend
@@ -202,12 +235,13 @@ connection is one config surface.
 ## Tests & benchmark (measured, reproducible)
 
 ```bash
-.venv/bin/python -m pytest tests/ -q        # 25 passed, 2 skipped
+.venv/bin/python -m pytest tests/ -q        # 33 passed, 2 skipped
 .venv/bin/python benchmark/run_benchmark.py # SCORE: 14/14 (8/8 multi-hop)
 ```
 
-- 25 unit tests cover generation, ingestion, expertise derivation, memory layers,
-  cross-agent handoff, planner, Q&A, and the FalkorDB Cypher builders. The 2 skipped tests
+- 33 unit tests cover generation, ingestion, expertise derivation, memory layers,
+  cross-agent handoff, planner, Q&A, the FalkorDB Cypher builders, and the Token
+  Factory inference routing (mocked transport — no live calls in the suite). The 2 skipped tests
   are the live-FalkorDB integration suite (`tests/test_falkor_integration.py`), gated on
   `FALKORDB_HOST` because this build VM has no FalkorDB server.
 - The benchmark freezes 14 questions with expected answers (8 of them multi-hop, verified by
@@ -242,8 +276,8 @@ and benchmark actually measure.
 
 ```
 crew_memory/  config.py graphdb.py synthetic.py ingest.py memory.py
-              planner.py qa.py agents.py server.py templates/index.html
+              planner.py qa.py agents.py inference.py server.py templates/index.html
 scripts/      seed_demo.py session1_teach.py session2_execute.py run_falkordb_local.sh
 benchmark/    questions.json run_benchmark.py
-tests/        8 test files (unit, cypher, live-integration)
+tests/        9 test files (unit, cypher, live-integration)
 ```
