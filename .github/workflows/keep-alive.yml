@@ -1,0 +1,35 @@
+# Graph Hacks judging keep-alive.
+# Purpose: Render's free tier spins the demo down after ~15 minutes idle;
+# the first judge click would otherwise hit a ~30-50s cold start.
+# Cost: $0 — GitHub Actions scheduled workflows are free on public repos,
+# and ~47 hours of warm time is well inside Render's 750 free instance
+# hours/month.
+# Stop condition is built in: the date gate below makes every run a no-op
+# after the Graph Hacks close (Sun Oct 18, 2026 8:29 AM HST = 18:29 UTC),
+# and the workflow file should be deleted after judging ends.
+
+name: graph-hacks-keep-alive
+
+on:
+  schedule:
+    # Every 14 minutes — just inside Render free tier's ~15-minute spin-down.
+    - cron: "*/14 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stop after the judging window closes
+        run: |
+          # Graph Hacks hard close: 2026-10-18 18:29 UTC
+          if [ "$(date -u +%s)" -gt 1792348140 ]; then
+            echo "Judging window closed — keep-alive inactive. Delete this workflow."
+            exit 0
+          fi
+          echo "Within judging window — pinging demo."
+      - name: Ping the live demo status endpoint
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 https://crew-memory-graph.onrender.com/api/status)
+          echo "GET /api/status -> HTTP $code"
+          test "$code" = "200"
