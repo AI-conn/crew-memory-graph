@@ -8,6 +8,7 @@ product, and it is what the handoff demo and the tests exercise.
 """
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -24,6 +25,28 @@ def _now() -> str:
 
 def _uid(prefix: str) -> str:
     return f"{prefix}:{uuid.uuid4().hex[:12]}"
+
+
+# Ingest-side marker stripping (gate fix F-3c, 2026-10-16). Taught fact
+# text later reaches an LLM prompt; instruction-shaped markers planted in
+# it ("SYSTEM NOTICE:", "[SYSTEM]", "### System:", ...) were the P3
+# probe's elevation vector. Stripping is deliberately narrow: it removes
+# the marker tokens only, at line starts, and keeps the remaining text as
+# an ordinary claim. It is one layer of F-3, not a sanitizer promise —
+# the write gate (F-3a) and the prompt framing (F-3b) carry the rest.
+_INSTRUCTION_MARKERS = re.compile(
+    r"(?im)^[ \t]*(?:"
+    r"#{1,6}[ \t]*system[ \t]*[:\-]?|"
+    r"\[(?:system|sys)\][ \t]*[:\-]?|"
+    r"<<\/?SYS>>[ \t]*|"
+    r"system[ \t]+notice[ \t]*[:\-]|"
+    r"system[ \t]*[:\-]"
+    r")[ \t]*")
+
+
+def sanitize_fact_text(text: str) -> str:
+    """Remove instruction-shaped leading markers from taught fact text."""
+    return _INSTRUCTION_MARKERS.sub("", text or "")
 
 
 class MemoryService:
@@ -55,9 +78,13 @@ class MemoryService:
         return eid
 
     def episodes(self, session_id: str | None = None) -> list[dict]:
-        eps = self.be.find_nodes("Episode")
+        # The session filter is pushed into the backend query (server-side
+        # WHERE on the graph backend) instead of fetching every episode and
+        # filtering in Python. Same result set, far fewer rows moved.
         if session_id:
-            eps = [e for e in eps if e["props"].get("session") == session_id]
+            eps = self.be.find_nodes("Episode", session=session_id)
+        else:
+            eps = self.be.find_nodes("Episode")
         return sorted(eps, key=lambda e: e["props"].get("created_at", ""))
 
     # -- semantic memory (learned facts) ---------------------------------
@@ -66,7 +93,8 @@ class MemoryService:
                    source: str = "briefing") -> str:
         fid = _uid("fact")
         self.be.merge_node("Fact", fid, {
-            "text": text, "kind": kind, "agent": agent_id, "session": session_id,
+            "text": sanitize_fact_text(text), "kind": kind,
+            "agent": agent_id, "session": session_id,
             "source": source, "created_at": _now(), "layer": "semantic"})
         self.be.merge_edge(f"agent:{agent_id}", "WROTE", fid)
         self.be.merge_edge(fid, "LEARNED_IN", session_id)
@@ -126,11 +154,9 @@ class MemoryService:
         return hid
 
     def open_handoffs(self, agent_id: str) -> list[dict]:
-        out = []
-        for h in self.be.find_nodes("Handoff", status="open"):
-            if h["props"].get("to_agent") == agent_id:
-                out.append(h)
-        return out
+        # Both filters ride the backend query (was: status in the query,
+        # to_agent filtered in Python over every open handoff).
+        return self.be.find_nodes("Handoff", status="open", to_agent=agent_id)
 
     def complete_handoff(self, handoff_uid: str, by_agent: str, session_id: str,
                          result_text: str) -> None:
@@ -154,15 +180,48 @@ class MemoryService:
 
     # -- recall ----------------------------------------------------------------
     def recall(self, text: str) -> list[dict]:
-        """Facts whose text or ABOUT-entities match the query terms."""
+        """Facts whose text or ABOUT-entities match the query terms.
+
+        Match semantics are unchanged, but the ABOUT lookup no longer runs
+        per fact (the old shape was one neighbors call per fact in the
+        graph — an N+1 against a hosted backend). Facts that already match
+        on their own text never trigger it; the rest resolve their ABOUT
+        names in one bulk pass (see _about_names).
+        """
         q = text.lower()
-        hits = []
-        for f in self.be.find_nodes("Fact"):
+        terms = [t for t in q.split() if len(t) > 3]
+        facts = self.be.find_nodes("Fact")
+        matched: set[str] = set()
+        pending = []
+        for f in facts:
             hay = f["props"].get("text", "").lower()
-            about_names = []
-            for _, n in self.be.neighbors(f["uid"], "ABOUT", "out"):
-                about_names.append(n["props"].get("name") or n["props"].get("title") or "")
-            if q in hay or any(q in a.lower() for a in about_names) or \
-                    any(term in hay for term in q.split() if len(term) > 3):
-                hits.append(f)
-        return hits
+            if q in hay or any(t in hay for t in terms):
+                matched.add(f["uid"])
+            else:
+                pending.append(f)
+        if pending:
+            names = self._about_names([f["uid"] for f in pending])
+            for f in pending:
+                if any(q in a.lower() for a in names.get(f["uid"], [])):
+                    matched.add(f["uid"])
+        return [f for f in facts if f["uid"] in matched]
+
+    def _about_names(self, fact_uids: list[str]) -> dict[str, list[str]]:
+        """{fact_uid: [ABOUT-target display names]} in two backend calls:
+        one all_edges pass for the ABOUT edges of the given facts, one
+        all_nodes pass to resolve the target names."""
+        want = set(fact_uids)
+        targets: dict[str, list[str]] = {}
+        for e in self.be.all_edges():
+            if e["rel"] == "ABOUT" and e["src"] in want:
+                targets.setdefault(e["src"], []).append(e["dst"])
+        if not targets:
+            return {}
+        nodes = {n["uid"]: n for n in self.be.all_nodes()}
+        return {
+            src: [
+                (nodes[d]["props"].get("name") or nodes[d]["props"].get("title") or "")
+                for d in dsts if d in nodes
+            ]
+            for src, dsts in targets.items()
+        }

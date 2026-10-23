@@ -7,6 +7,7 @@ and labeled).
 """
 from __future__ import annotations
 
+import hmac
 import os
 
 from flask import Flask, jsonify, render_template, request
@@ -25,6 +26,51 @@ def create_app(cfg: Config | None = None) -> Flask:
     cfg = cfg or Config.from_env()
     app = Flask(__name__)
     cache: dict[str, object] = {}
+
+    # -- Write gate (gate fix F-3a, 2026-10-16) ---------------------------
+    # The write endpoints (/api/teach, /api/seed, /api/session1,
+    # /api/session2) mutate the graph whose facts are later concatenated
+    # into an LLM prompt. Two deployment controls close the
+    # unauthenticated-write -> prompt path on a public deployment:
+    #   DEMO_DISABLE_WRITES=1  -> all writes refused (403).
+    #   DEMO_ADMIN_TOKEN=<t>   -> writes require header
+    #                             X-Demo-Admin-Token: <t> (401 otherwise).
+    # With neither set (local dev / quickstart) writes stay open, exactly
+    # as before; /api/status reports which state the deployment is in.
+    def writes_blocked():
+        """None if the write may proceed, else a (response, code) refusal."""
+        if os.environ.get("DEMO_DISABLE_WRITES", "").strip().lower() \
+                in ("1", "true", "yes"):
+            return jsonify({"ok": False, "error":
+                            "writes are disabled on this deployment"}), 403
+        token = os.environ.get("DEMO_ADMIN_TOKEN", "")
+        if token:
+            sent = request.headers.get("X-Demo-Admin-Token", "")
+            if not hmac.compare_digest(sent, token):
+                return jsonify({"ok": False, "error":
+                                "admin token required for writes"}), 401
+        return None
+
+    def writes_protected() -> bool:
+        return bool(os.environ.get("DEMO_ADMIN_TOKEN", "")) or \
+            os.environ.get("DEMO_DISABLE_WRITES", "").strip().lower() \
+            in ("1", "true", "yes")
+
+    # -- Security headers (gate fix F-5, 2026-10-16) ----------------------
+    @app.after_request
+    def security_headers(resp):
+        # The demo UI is a single file with inline script/style, so the CSP
+        # keeps 'unsafe-inline' for those two directives; it still blocks
+        # every external origin, framing, and MIME sniffing.
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+            "frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        resp.headers["X-Frame-Options"] = "DENY"
+        resp.headers["Server"] = "crew-memory-graph"
+        return resp
 
     def get_backend(tenant: str):
         if tenant not in cache:
@@ -67,6 +113,7 @@ def create_app(cfg: Config | None = None) -> Flask:
                 "OFFLINE DEV MODE — in-memory graph (not FalkorDB)"),
             "nodes": be.node_count(), "edges": be.edge_count(),
             "synthetic_data": True,
+            "writes_protected": writes_protected(),
         })
 
     @app.get("/api/graph")
@@ -80,6 +127,8 @@ def create_app(cfg: Config | None = None) -> Flask:
 
     @app.post("/api/seed")
     def seed():
+        if (refused := writes_blocked()) is not None:
+            return refused
         tenant = tenant_of(request)
         be = get_backend(tenant)
         counts = ingest.ingest_company(be)
@@ -119,6 +168,8 @@ def create_app(cfg: Config | None = None) -> Flask:
 
     @app.post("/api/teach")
     def teach():
+        if (refused := writes_blocked()) is not None:
+            return refused
         data = request.get_json(force=True)
         tenant = data.get("tenant") or cfg.default_tenant
         be = ensure_seeded(tenant)
@@ -131,6 +182,8 @@ def create_app(cfg: Config | None = None) -> Flask:
 
     @app.post("/api/session1")
     def session1():
+        if (refused := writes_blocked()) is not None:
+            return refused
         tenant = tenant_of(request)
         be = ensure_seeded(tenant)
         out = agents.run_session1(be)
@@ -139,6 +192,8 @@ def create_app(cfg: Config | None = None) -> Flask:
 
     @app.post("/api/session2")
     def session2():
+        if (refused := writes_blocked()) is not None:
+            return refused
         tenant = tenant_of(request)
         be = ensure_seeded(tenant)
         out = agents.run_session2(be)

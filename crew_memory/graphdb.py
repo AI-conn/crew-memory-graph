@@ -16,12 +16,26 @@ Two backends implement one interface:
 Node shape everywhere: ``{"uid": str, "label": str, "props": {..}}`` where
 ``props`` always contains ``uid`` too. Path shape:
 ``{"nodes": [node, ...], "rels": [rel_type, ...]}`` with len(rels) == len(nodes)-1.
+
+Performance shape (2026-10-17 optimization pass): against a hosted graph the
+dominant cost is round trips and payload, not scans at demo scale, so the
+FalkorDB backend's reads each run ONE query that returns fully-hydrated rows
+(no uid-then-hydrate second pass), traversals hydrate all their rows in a
+single follow-up query, and counts use server-side ``count()`` aggregation
+instead of materializing the whole graph. ``connect()`` also creates the
+schema indexes (per-label ``uid`` — the lookup key every pattern filters
+on — plus the two filtered-list properties) so the labeled patterns stay
+index-served as graphs grow past demo size.
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 from abc import ABC, abstractmethod
+
+log = logging.getLogger(__name__)
 
 # Relationship types allowed in traversal patterns (schema whitelist).
 REL_TYPES = {
@@ -33,6 +47,16 @@ REL_TYPES = {
 }
 
 TEXT_PROPS = ("name", "title", "summary", "text", "goal")
+
+# Labels the schema writes (ingest + memory layers). ``connect()`` indexes
+# each label's ``uid`` property — every point lookup, merge, and traversal
+# anchors on ``uid`` — plus the two properties the list endpoints filter on.
+INDEXED_LABELS = (
+    "Company", "Team", "Person", "Topic", "Project", "Document", "Decision",
+    "Ticket", "ChatThread", "Agent", "Session", "Episode", "Fact",
+    "Procedure", "Step", "Handoff",
+)
+INDEXED_PROPS = (("Handoff", "status"), ("Episode", "session"))
 
 
 def _node(uid: str, label: str, props: dict) -> dict:
@@ -120,7 +144,34 @@ class FalkorDBBackend(GraphBackend):
             username=cfg.falkor_username,
             password=cfg.falkor_password,
         )
-        return cls(db.select_graph(cfg.graph_name(tenant)))
+        be = cls(db.select_graph(cfg.graph_name(tenant)))
+        be.ensure_indexes()
+        return be
+
+    def ensure_indexes(self) -> None:
+        """Create the schema indexes (idempotent housekeeping).
+
+        One round trip per index, once per connection. Failures are
+        swallowed: an index that already exists (or a server that manages
+        its own indexing) must never stop the app from connecting — the
+        queries are correct with or without them, just slower at scale.
+        """
+        statements = [
+            f"CREATE INDEX FOR (n:{label}) ON (n.uid)"
+            for label in INDEXED_LABELS
+        ] + [
+            f"CREATE INDEX FOR (n:{label}) ON (n.{prop})"
+            for label, prop in INDEXED_PROPS
+        ]
+        for stmt in statements:
+            try:
+                self.g.query(stmt)
+            except Exception as exc:
+                # Never break connect over index housekeeping — but never
+                # fail silently either: a swallowed error here means the
+                # deployment runs unindexed, which must be observable.
+                log.debug("ensure_indexes: statement skipped (%s): %s",
+                          stmt, exc)
 
     # Cypher builders are pure functions of their inputs -> unit-testable.
     @staticmethod
@@ -188,6 +239,16 @@ class FalkorDBBackend(GraphBackend):
         label, props = rows[0]
         return _node(uid, label, props)
 
+    def node_count(self) -> int:
+        # Server-side aggregation: one small reply instead of materializing
+        # (and shipping) every node just to count them.
+        rows = self._rows("MATCH (n) RETURN count(n) AS c")
+        return int(rows[0][0])
+
+    def edge_count(self) -> int:
+        rows = self._rows("MATCH ()-[r]->() RETURN count(r) AS c")
+        return int(rows[0][0])
+
     def _hydrate(self, uids: list[str]) -> dict[str, dict]:
         if not uids:
             return {}
@@ -201,13 +262,23 @@ class FalkorDBBackend(GraphBackend):
         lab = f":{label}" if label else ""
         where, params = [], {"f": filters}
         for k in filters:
+            # Filter KEYS are interpolated (values stay $f.* parameters), so
+            # keys are restricted to plain identifiers — callers are our own
+            # code with constant keys; anything else is a programming error,
+            # never something to interpolate into Cypher.
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k):
+                raise ValueError(f"bad filter key: {k!r}")
             where.append(f"n.{k} = $f.{k}")
         cypher = f"MATCH (n{lab})"
         if where:
             cypher += " WHERE " + " AND ".join(where)
-        rows = self._rows(cypher + " RETURN n.uid AS uid", params)
-        hydrated = self._hydrate([r[0] for r in rows])
-        return [hydrated[r[0]] for r in rows if r[0] in hydrated]
+        # One query, fully hydrated rows (was: uid query + _hydrate query).
+        rows = self._rows(
+            cypher + " RETURN n.uid AS uid, labels(n)[0] AS label, "
+            "properties(n) AS props",
+            params,
+        )
+        return [_node(uid, label, props) for uid, label, props in rows]
 
     def neighbors(self, uid: str, rel: str | None = None, direction: str = "out") -> list[tuple[dict, dict]]:
         if rel and rel not in REL_TYPES:
@@ -219,26 +290,35 @@ class FalkorDBBackend(GraphBackend):
             pattern = f"(a {{uid: $uid}})<-{r}-(b)"
         else:
             pattern = f"(a {{uid: $uid}})-{r}-(b)"
+        # One query: edge properties and the neighbor node arrive together
+        # (was: edge query + _hydrate query).
         rows = self._rows(
-            f"MATCH {pattern} RETURN properties(r) AS eprops, b.uid AS buid",
+            f"MATCH {pattern} RETURN properties(r) AS eprops, b.uid AS buid, "
+            "labels(b)[0] AS blabel, properties(b) AS bprops",
             {"uid": uid},
         )
-        hydrated = self._hydrate([row[1] for row in rows])
-        return [(row[0] or {}, hydrated[row[1]]) for row in rows if row[1] in hydrated]
+        return [
+            (row[0] or {}, _node(row[1], row[2], row[3])) for row in rows
+        ]
 
     def traverse(self, start_uid: str, steps: list[tuple[str, str]]) -> list[dict]:
         rows = self._rows(self.cypher_traverse(steps), {"start": start_uid})
+        # Hydrate every path's nodes in ONE follow-up query (was: one
+        # _hydrate query per result row — N+1 on multi-path traversals).
+        all_uids = list(dict.fromkeys(u for uids, _ in rows for u in uids))
+        hydrated = self._hydrate(all_uids)
         paths = []
         for uids, rels in rows:
-            hydrated = self._hydrate(uids)
             if all(u in hydrated for u in uids):
                 paths.append({"nodes": [hydrated[u] for u in uids], "rels": list(rels)})
         return paths
 
     def all_nodes(self) -> list[dict]:
-        rows = self._rows("MATCH (n) RETURN n.uid AS uid")
-        hydrated = self._hydrate([r[0] for r in rows])
-        return list(hydrated.values())
+        rows = self._rows(
+            "MATCH (n) RETURN n.uid AS uid, labels(n)[0] AS label, "
+            "properties(n) AS props"
+        )
+        return [_node(uid, label, props) for uid, label, props in rows]
 
     def all_edges(self) -> list[dict]:
         rows = self._rows(
@@ -254,11 +334,11 @@ class FalkorDBBackend(GraphBackend):
             f"toLower(coalesce(n.{p}, '')) CONTAINS $q" for p in TEXT_PROPS
         )
         rows = self._rows(
-            f"MATCH (n) WHERE {conds} RETURN n.uid AS uid LIMIT $limit",
+            f"MATCH (n) WHERE {conds} RETURN n.uid AS uid, "
+            "labels(n)[0] AS label, properties(n) AS props LIMIT $limit",
             {"q": text.lower(), "limit": limit},
         )
-        hydrated = self._hydrate([r[0] for r in rows])
-        return [hydrated[r[0]] for r in rows if r[0] in hydrated]
+        return [_node(uid, label, props) for uid, label, props in rows]
 
 
 # ----------------------------------------------------------------------
