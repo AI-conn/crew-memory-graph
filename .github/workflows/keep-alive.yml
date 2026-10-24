@@ -1,11 +1,18 @@
-# Graph Hacks judging keep-alive.
+# Keep-alive for the Crew Memory Graph demo during judging.
 # Purpose: Render's free tier spins the demo down after ~15 minutes idle;
 # the first judge click would otherwise hit a ~30-50s cold start.
 # Cost: $0 — GitHub Actions scheduled workflows are free on public repos,
-# and ~47 hours of warm time is well inside Render's 750 free instance
+# and keeping the demo warm stays inside Render's 750 free instance
 # hours/month.
-# Stop condition is built in: the date gate below makes every run a no-op
-# after the Graph Hacks close (Fri Nov 20, 2026 8:29 AM HST = 18:29 UTC),
+# Design: one fast non-200 no longer fails the run. The ping retries
+# inside a fixed attempt budget and passes on the first measured
+# HTTP 200; every attempt's status and latency are written to the run
+# summary as the evidence record. The run fails only when the whole
+# budget is spent without a 200, so a failure email means the demo was
+# genuinely unreachable for minutes — not that one request caught a
+# redeploy or a cold start.
+# Stop condition is built in: the date gate below makes every run a
+# no-op after the judging window closes (Wed Dec 16, 2026 18:29 UTC),
 # and the workflow file should be deleted after judging ends.
 
 name: graph-hacks-keep-alive
@@ -19,17 +26,40 @@ on:
 jobs:
   ping:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Stop after the judging window closes
         run: |
-          # Graph Hacks hard close: 2026-11-20 18:29 UTC
-          if [ "$(date -u +%s)" -gt 1795199340 ]; then
+          # Judging window hard close: 2026-12-16 18:29 UTC
+          if [ "$(date -u +%s)" -gt 1797445740 ]; then
             echo "Judging window closed — keep-alive inactive. Delete this workflow."
             exit 0
           fi
           echo "Within judging window — pinging demo."
       - name: Ping the live demo status endpoint
         run: |
-          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 https://crew-memory-graph.onrender.com/api/status)
-          echo "GET /api/status -> HTTP $code"
-          test "$code" = "200"
+          url="https://crew-memory-graph.onrender.com/api/status"
+          delays="0 20 40 60"
+          attempt=0
+          {
+            echo "## Keep-alive ping evidence"
+            echo ""
+            echo "| Attempt | HTTP | Seconds |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for delay in $delays; do
+            attempt=$((attempt + 1))
+            if [ "$delay" -gt 0 ]; then sleep "$delay"; fi
+            out=$(curl -s -o /dev/null -w "%{http_code} %{time_total}" --max-time 60 "$url" || true)
+            if [ -z "$out" ]; then out="000 0"; fi
+            code=${out%% *}
+            secs=${out##* }
+            echo "| $attempt | $code | $secs |" >> "$GITHUB_STEP_SUMMARY"
+            echo "Attempt $attempt: GET /api/status -> HTTP $code in ${secs}s"
+            if [ "$code" = "200" ]; then
+              echo "Demo warm (attempt $attempt)." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          done
+          echo "Demo did not answer 200 within the attempt budget." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
